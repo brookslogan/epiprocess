@@ -984,3 +984,170 @@ dplyr_col_modify.col_modify_recorder_df <- function(data, cols) {
   attr(data, "epiprocess::col_modify_recorder_df::cols") <- cols
   data
 }
+
+
+
+# Helpers for `filter`:
+
+# #' TODO
+# #'
+# #' @param parent_df the "parent class" data frame to wrap
+# #' @param forbidden_colnames chr
+# #'
+# #' @keywords internal
+# new_forbidden_cols_df <- function(parent_df, forbidden_colnames) {
+#   result <- parent_df
+#   class(result) <- c("forbidden_cols_df", class(parent_df))
+#   attr(result, "forbidden_colnames") <- forbidden_colnames
+#   result
+# }
+
+# #' @export
+# `$.new_forbidden_cols_df` <- function(x, name) {
+#   print("HERE")
+#   NextMethod()
+# }
+
+
+# #' @export
+# `[[.new_forbidden_cols_df` <- function(x, i, j, ..., exact = TRUE) {
+#   print("HERE")
+#   NextMethod()
+# }
+
+# does not work.  try just hiding version and then checking for error to explain better?  but if version in .env then problematic...
+
+#' [`dplyr::filter`] for `epi_archive`s
+#'
+#' @param .data an `epi_archive`
+#' @param ... as in [`dplyr::filter`]; using the `version` column is not allowed
+#'   unless you use `.format_aware = TRUE`; see details.
+#' @param .by as in [`dplyr::filter`]
+#' @param .format_aware optional, `TRUE` or `FALSE`; default `FALSE`. See
+#'   details.
+#'
+#' @details
+#'
+#' By default, using the `version` column is disabled as it's easy to
+#' get unexpected results. See if either [`epix_as_of`] or [`epix_slide`]
+#' works as an alternative. If they don't cover your use case, then you can
+#' set `.format_aware = TRUE` to enable usage of the `version` column, but be
+#' careful to:
+#' * Factor in that `.data$DT` may be using a "compact" format based on diffing
+#'   consecutive versions; see details of [`as_epi_archive`]
+#' * Set `clobberable_versions_start` and `versions_end` of the result
+#'   appropriately after the `filter` call. They will be initialized with the
+#'   same values as in `.data`.
+#'
+#' `dplyr::filter` also has an optional argument `.preserve`, which should not
+#' have an impact on (ungrouped) `epi_archive`s, and `grouped_epi_archive`s do
+#' not currently support `dplyr::filter`.
+#'
+#' @export
+filter.epi_archive <- function(.data, ..., .by = NULL, .format_aware = FALSE) {
+  in_tbl <- tibble::as_tibble(as.list(.data$DT), .name_repair = "minimal")
+  if (.format_aware) {
+    out_tbl <- in_tbl %>%
+      filter(..., .by = .by)
+  } else {
+    # FIXME TODO actually remove the version column from access, and somehow
+    # recover the indices... or some alternative
+    # quosures <- rlang::enquos(...)
+    # quosures <- lapply(quosures, function(quosure) {
+    #   envir <- rlang::quo_get_env(quosure)
+    #   envir <- new.env(parent = envir)
+    #   delayedAssign("version", stop("SOIEFJO"), assign.env = envir)
+    #   quosure <- rlang::quo_set_env(quosure, envir)
+    #   quosure
+    # })
+    # in_tbl$version <- NULL
+    # # FIXME what about .data$version??
+    # in_tbl$.inds <- seq_len(nrow(in_tbl))
+    # subres <- dplyr::filter(in_tbl, !!!quosures, .by = .by)
+    # out_tbl <- vctrs::vec_slice(in_tbl, subres$.inds)
+    #
+    #
+    #
+    out_tbl <- in_tbl %>%
+      filter({
+        e <- environment()
+        while(!identical(e, globalenv()) && !identical(e, emptyenv())) {
+          if ("version" %in% names(e)) {
+            # "version" is expected to be an active binding, and directly
+            # assigning over it has issues; explicitly `rm` first.
+            rm(list = "version", envir = e)
+            delayedAssign("version", stop("SEOIFJ"), assign.env = e)
+            break
+          }
+          e <- parent.env(e)
+        }
+        TRUE
+      }, ..., .by = .by)
+
+    # active bind on top of the parent env active binding?
+    #
+    #
+    #
+    # quosures <- lapply(quosures, function(quosure) {
+    #   quosure_expr <- rlang::quo_get_expr(quosure)
+    #   quosure_expr <- rlang::expr({
+    #     delayedAssign("version", stop("SOIEFJO"))
+    #     # FIXME might also need to assign within .data
+    #     #
+    #     # TODO or turn this into an eval?  for better debug / srcref?  but second eval has complications with env ownership and maybe .data$.data$ type of things
+    #     !!quosure_expr
+    #   })
+    #   quosure <- rlang::quo_set_expr(quosure, quosure_expr)
+    #   quosure
+    # })
+    # quosures <- lapply(quosure, function(quosure) {
+    # })
+    # stop("FIXME TODO")
+    # or set up delayed/active bindings to detect usage somehow?
+    #
+    # or just impl filter?
+    #
+    # or route through some sort of mutate op? maybe bad performance & might
+    # change any short-circuit semantics with commas
+    #
+    # TODO note .format_aware = TRUE for just performance if high overhead?
+    # out_tbl <- in_tbl %>%
+    #   filter(!!!quosures, .by = .by)
+    # subres <- in_tbl %>%
+    #   # TODO strip off unsupported filter options, check for mutate option name
+    #   # conflicts; TODO name; TODO check ndots
+    #   mutate(.blah = {browser();Reduce(`&`, list(...))}, .by = .by, .keep = "used")
+    # ... here aren't being evaluated in mask...
+    # if ("version" %in% names(subres)) stop("SEOIFJOEIJF")
+    # out_tbl <- vctrs::vec_slice(in_tbl, subres$.blah)
+  }
+  out_geo_type <-
+    if (.data$geo_type == "custom") {
+      # We might be going from a multi-resolution to single-resolution archive;
+      # e.g. national+state -> state; try to re-infer:
+      guess_geo_type(out_tbl$geo_value)
+    } else {
+      # We risk less-understandable inference failures such as inferring "hhs"
+      # from selecting hrr 10 data; just use the old geo_type:
+      .data$geo_type
+    }
+  # We might be going from daily to weekly; re-infer:
+  out_time_type <- guess_time_type(out_tbl$time_value)
+  # Even if they narrow down to just a single value of an other_keys column,
+  # it's probably still better (& simpler) to treat it as an other_keys column
+  # since it still exists in the result:
+  out_other_keys <- .data$other_keys
+  # `filter` makes no guarantees about not aliasing columns in its result when
+  # the filter condition is all TRUE, so don't setDT.
+  out_dtbl <- as.data.table(out_tbl, key = out_other_keys)
+  result <- new_epi_archive(
+    out_dtbl,
+    out_geo_type, out_time_type, out_other_keys,
+    # Assume version-related metadata unchanged; part of why we want to push
+    # back on filter expressions like `.data$version <= .env$as_of`:
+    .data$clobberable_versions_start, .data$versions_end
+  )
+  # Filtering down rows while keeping all (ukey) columns should preserve ukey
+  # uniqueness.
+  result
+}
